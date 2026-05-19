@@ -80,6 +80,12 @@ class BalanceTrainer(Trainer):
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
 
         return (loss, outputs) if return_outputs else loss
+    
+    def _move_model_to_device(self, model, device):
+        # IMPORTANT: When using device_map="auto" (accelerate offload),
+        # the model is already dispatched across devices.
+        # Trainer calling model.to(device) will crash with meta tensors.
+        return model
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):  
         output_dir = output_dir if output_dir is not None else self.args.output_dir

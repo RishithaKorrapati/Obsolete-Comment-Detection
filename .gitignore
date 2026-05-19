@@ -1,0 +1,9 @@
+.env
+__pycache__/
+*.pyc
+offload/
+
+.venv/
+Data/
+LoraTinyLlama_1.1B/
+LoraCodeLlama_7B/

@@ -56,14 +56,27 @@ def main(
 
     prompter = Prompter(prompt_template)
     tokenizer = AutoTokenizer.from_pretrained(base_model)
+    # if device == "cuda":
+    #     model = AutoModelForCausalLM.from_pretrained(
+    #         base_model,
+    #         torch_dtype=torch.bfloat16,
+    #         device_map="auto",
+    #     )
+    #     if lora_weights:
+    #         lora_model = PeftModel.from_pretrained(
+    #             model,
+    #             lora_weights,
+    #             torch_dtype=torch.float16,
+    #         )
     if device == "cuda":
         model = AutoModelForCausalLM.from_pretrained(
             base_model,
-            torch_dtype=torch.bfloat16,
+            torch_dtype=torch.float16,   # ✅ fp16
             device_map="auto",
+            low_cpu_mem_usage=True,
         )
         if lora_weights:
-            lora_model = PeftModel.from_pretrained(
+            model = PeftModel.from_pretrained(
                 model,
                 lora_weights,
                 torch_dtype=torch.float16,
@@ -79,8 +92,8 @@ def main(
             )
 
     model.config.pad_token_id = tokenizer.pad_token_id = 0
-    if lora_weights:
-        lora_model.config.pad_token_id = 0
+    # if lora_weights:
+    #     lora_model.config.pad_token_id = 0
 
     model.eval()
     if torch.__version__ >= "2" and sys.platform != "win32":
@@ -99,23 +112,60 @@ def main(
         **kwargs,
     ):
         prompt = prompter.generate_prompt(instruction, input)
-        inputs = tokenizer(prompt, return_tensors="pt")
-        input_ids = inputs["input_ids"].to(device)
+        # # inputs = tokenizer(prompt, return_tensors="pt")
+        # # input_ids = inputs["input_ids"].to(device)
+        # inputs = tokenizer(
+        #     prompt,
+        #     return_tensors="pt",
+        #     truncation=True,
+        #     max_length=2048,   # hard cap for TinyLlama
+        # )
 
-        with torch.no_grad():
+        # inputs = {k: v.to(device) for k, v in inputs.items()}
+        # input_ids = inputs["input_ids"]
+
+        # with torch.no_grad():
+        #     generation_output = model.generate(
+        #         input_ids=input_ids,
+        #         do_sample=True,
+        #         top_p=top_p,
+        #         top_k=top_k,
+        #         num_beams=num_beams,
+        #         return_dict_in_generate=True,
+        #         output_scores=True,
+        #         max_new_tokens=max_new_tokens,
+        #     )
+        # s = generation_output.sequences[0]
+        inputs = tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=2048,     # ✅ hard cap for TinyLlama
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.inference_mode():  # ✅ no grads, best for inference
             generation_output = model.generate(
-                input_ids=input_ids,
-                do_sample=True,
-                top_p=top_p,
-                top_k=top_k,
-                num_beams=num_beams,
+                **inputs,
+                max_new_tokens=64,     # ✅ keep small (32–128)
+                do_sample=False,       # ✅ deterministic, cheaper
+                use_cache=False,       # ✅ BIG VRAM saver on 4GB
+                num_beams=1,
                 return_dict_in_generate=True,
-                output_scores=True,
-                max_new_tokens=max_new_tokens,
             )
+
         s = generation_output.sequences[0]
+        # output = tokenizer.decode(s)
+        # res = prompter.get_response(output)
+        # return res
         output = tokenizer.decode(s)
         res = prompter.get_response(output)
+
+        # ✅ free VRAM per iteration (prevents end-of-run OOM)
+        del inputs, generation_output, s
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return res
 
     results = {"old_comment_raw":[], 'new_code_raw':[], 'new_comment_raw':[], "label":[], "output":[], "flag":[]}
